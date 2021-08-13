@@ -5,6 +5,7 @@
 #include "spi3.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h> // provides rand()
 #include <util/delay.h>
 #include "ADClib.h"
 #include "stdio_setup.h"
@@ -18,14 +19,23 @@ uint16_t WFMFREQ = 0; // increases max LFO speed at the expense of DAC resolutio
 uint16_t CV = 0;
 
 volatile uint16_t c = 0; // counter in ISR--for DAC
-volatile uint8_t waveselect = 2; // counter in ISR -- debounce wave switch
+volatile uint8_t waveselect = 0; //  **SET DEFAULT WAVE HERE** counter in ISR -- debounce wave switch
+volatile uint8_t sh = 0;
 //void SPI_TransferTx16(uint8_t a, uint8_t b);  // debug with stdio_setup.h printf to ser
 
+ // saw does not begin at 0 so we need global variable.
+uint16_t sawseed = 4096;
+uint16_t *sawcount = &sawseed; // saw does not begin at 0 so we need global variable
  
 void ramp(uint16_t freq);
 void tri(uint16_t freq);
 void squarewave(uint16_t freq);
-uint16_t count = 0; // global counter for creating waveforms 
+void saw(uint16_t freq);
+void randy(uint16_t freq);
+void randy2(uint16_t freq);
+void shold(uint16_t freq);
+
+volatile uint16_t count = 0; // global counter for creating waveforms 
 int16_t temp = 0;
 uint8_t speed = 0;
 
@@ -47,7 +57,7 @@ ISR (TIMER2_COMPA_vect)  // timer2 overflow interrupt
 	waveselect++;
 	
 	}
-	if (waveselect == 3)
+	if (waveselect >= 8)  // one more than waves created
 	{
 	waveselect = 0;	
 	
@@ -56,6 +66,15 @@ ISR (TIMER2_COMPA_vect)  // timer2 overflow interrupt
 	
 }
 
+ISR (INT1_vect)
+{
+	count = 4096; 
+    *sawcount = 4096;
+	sh = 10;
+	
+	_delay_ms(2);// "Max Riley Reset" new feature, incoming interrupt resets C (LFO wavefrm) to zero
+	
+}
 
 
 
@@ -65,7 +84,7 @@ int main(void)
 	//* pin D1 for waveform select NOTE!! for AVR GPIO 1 is output, 0 is input You knew that right?*//
 	
 	DDRD = 0b011100000;      //make an input D7, D6, D5 outputs all others are inputs
-	PORTD = 0b00000011;    //enable pull-up for D0 and D1; this seems to trump I/O designation for DDRD register?
+	PORTD = 0b00000011;    //enable pull-up for D0 and D1 and D2; this seems to trump I/O designation for DDRD register?
 	
     /*  higher freq, less rez DEBUG, trying things out.....
 	WFMFREQ adds to c count, more speed but less resolution for DAC.
@@ -84,6 +103,15 @@ int main(void)
     spi_mode(0);
 	DESELECT();
 	SELECT();
+	
+    EIMSK |= 1<<INT1;  // enable external interrupt 1 (D2 pin)
+
+	EICRA |= 1<<ISC11; // interrupt on falling edge (trig)
+	EICRA |= ~(1 << ISC10); // interrupt on low (trig)
+	
+
+	
+ 
 
 	//********TIMER--FREQ************
 	
@@ -145,9 +173,9 @@ int main(void)
 
 
 // boot up fun with panel LEDs
-    PORTD &= ~(1 << 5);     // LED1 off
-    PORTD &= ~(1 << 6);    // LED2 off
-    PORTD &= ~(1 << 7);    // LED3 off
+    PORTD &= ~(1 << 5);     // BOTTOM LED1 off
+    PORTD &= ~(1 << 6);    // MIDDLE LED2 off
+    PORTD &= ~(1 << 7);    // TOP LED3 off
 
 
     PORTD |= (1 << 5);     // turn on LEDs and wait
@@ -176,7 +204,7 @@ while(1)
 		
 		if (waveselect == 0)
 				{
-				squarewave(CV);
+				tri(CV);
 				}
 		
 		if (waveselect == 1)
@@ -185,25 +213,49 @@ while(1)
         		}
 		if (waveselect == 2)	 	
 				{
-				tri(CV);	
+				squarewave(CV);	
 				}
+        if (waveselect == 3)
+        		{
+	        	saw(CV);
+		
+        		}
+        if (waveselect == 4)
+                {
+	            randy(CV); // random CV generator
+                }
+
+        if (waveselect == 5)
+                {
+	            randy2(CV); // random CV generator #2
+                }
+    
+	    if (waveselect == 6)
+	           {
+		           shold(CV); // sample-hold
+	           }
+
+ 
 		}  // end while(1)
 } // end main
 
 
 void ramp(uint16_t freq)
 {
-    PORTD &= ~(1 << 5);     // LED1 off
-	PORTD |= (1 << 6);    // LED2 on
-	PORTD &= ~(1 << 7);    // LED3 off
+    PORTD &= ~(1 << 5);     // BOTTOM LED1 off
+	PORTD |= (1 << 6);    // MIDDLE LED2 on
+	PORTD &= ~(1 << 7);    // TOP LED3 off
 	uint16_t rate = 0;
 
 	rate = 1024-freq;
 
-	
+
 
 		if (c >= rate)
 		  {
+
+  	
+
 			 WFMFREQ = 12*(freq/100);
 			   //next 2 lines for debug   
               //printf("ramp rate: %d",rate);
@@ -220,10 +272,16 @@ void ramp(uint16_t freq)
 			// printf("ramp count: %d \n\r",count);
 			// printf("ramp bytes %x %x \n\r",CMSB,CLSB);
 		     c = 0; 
+  
+
+  
+  
              if (count > 4095)
              {
 	             count = 0;
-             }		 	  
+             }	
+			 
+ 	  
 		  }
 		
 	  
@@ -231,14 +289,15 @@ void ramp(uint16_t freq)
 
 void squarewave(uint16_t freq)
 {
-		 PORTD &= ~(1 << 5);     // LED1 off
-		 PORTD &= ~(1 << 6);    // LED2 off
-		 PORTD |= (1 << 7);    // LED3 on
+		 PORTD &= ~(1 << 5);     // BOTTOM LED1 off
+		 PORTD &= ~(1 << 6);    // MIDDLE LED2 off
+		 PORTD |= (1 << 7);    // TOP LED3 on
 	uint16_t rate = 0;
 
 	rate = 1024-freq;
 
 	WFMFREQ = freq/3;
+		   
 
 	if (c >= rate)
 	{
@@ -261,17 +320,23 @@ void squarewave(uint16_t freq)
 		// printf("sqwave count: %d \n\r",count);
 		// printf("sqwave bytes %x %x \n\r",CMSB,CLSB);
 		c = 0;
+		
+
+		
 		if (count > 4096-WFMFREQ)
 		{
 			count = 0;
+			
 		}
+		
+
 	}
 	
 	
-	if (c >= 25000)
+	if (c >= 25000) 
 	{
 		c = 0;
-	}
+    }
 
 	
 }
@@ -279,13 +344,15 @@ void squarewave(uint16_t freq)
  void tri(uint16_t freq)
  {
 	    // set pin 3 of Port B as output
-	 PORTD |= (1 << 5);     // LED1 on
-	 PORTD &= ~(1 << 6);    // LED2 off
-	 PORTD &= ~(1 << 7);    // LED3 off
+	 PORTD |= (1 << 5);     // BOTTOM LED1 on
+	 PORTD &= ~(1 << 6);    // MIDDLE LED2 off
+	 PORTD &= ~(1 << 7);    // TOP LED3 off
 	 uint16_t rate = 0;
      
 	 rate = 1024-freq;
      WFMFREQ = 8*(freq/100);
+
+
 
 	 if (c >= rate)
 	 {
@@ -293,6 +360,8 @@ void squarewave(uint16_t freq)
 		 //next 2 lines for debug
 		 //printf("input rate: %d",rate);
 		 // printf("tri ccccc: %d",c);
+		 
+ 
 		 
 		 if (count < 4096 + WFMFREQ)
 		    {
@@ -329,3 +398,239 @@ void squarewave(uint16_t freq)
 	 
  }
  
+ void saw(uint16_t freq)
+ {
+	 PORTD |= (1 << 5);     // BOTTOM LED1 on
+	 PORTD |= (1 << 6);    // MIDDLE LED2 on
+	 PORTD &= ~(1 << 7);    // TOP LED3 off
+     uint16_t rate = 0;
+ 			   
+ 	   speed = PIND;
+ 	   if ((speed & 0b00000001) == 0x00)
+ 	   {
+	 	   _delay_ms(1);
+ 	   }
+ 	   else
+ 	   {
+	 	    
+ 	   }
+ 
+
+	//if (c >= rate)
+    		
+    		
+    		
+    		//next 2 lines for debug
+    		// printf("ramp count: %d \n\r",count);
+    		// printf("ramp bytes %x %x \n\r",CMSB,CLSB);
+    		//c = 0;
+    		
+ 
+
+	if ((c >= 0) && (c < 65000))
+	{
+		 
+	  
+		//next 2 lines for debug
+		//printf("ramp rate: %d",rate);
+		// printf("ramp ccccc: %d",c);
+	     
+                     rate = freq + 1;
+                
+	                *sawcount = *sawcount - rate ;
+	                
+	                //x = 0;
+                    uint8_t CMSB = *sawcount >> 8;
+                    uint8_t CLSB = *sawcount & 0xFF;
+                    write4921(CMSB,CLSB);
+          
+                	  
+		
+
+	    
+
+		
+		
+	
+	
+		
+				
+				if (*sawcount <= rate)
+				{
+					*sawcount = 4096;
+					c = 0;
+					//x = 0;
+					
+				}	
+		
+		
+		
+
+	
+
+	 
+	
+	}
+	else
+	{
+		c = 0;
+	}
+	 
+	 
+ }
+ void randy(uint16_t freq)
+ {
+	 PORTD |= (1 << 5);     // BOTTOM LED1 on
+	 PORTD &= ~(1 << 6);    // MIDDLE LED2 off
+	 PORTD |= (1 << 7);    //  TOP LED3 on
+	 
+	 	   	   speed = PIND;
+	 	   	   if ((speed & 0b00000001) == 0x00)
+	 	   	   {
+		 	   	   OCR0A = 0x01;
+	 	   	   }
+	 	   	   else
+	 	   	   {
+		 	   	   OCR0A = 0xFF;
+	 	   	   }
+	 
+     
+	 uint16_t rand1 = 0;
+     uint16_t count = 0;
+	 uint16_t delayfactor = 0;
+	 
+	 
+     rand1= rand()  % 4096; // generate random number
+	
+	 c = 0;
+	 
+		    delayfactor = (1024 - freq)+50;
+			
+			 for (uint8_t del = 0; del < delayfactor/10; del++)
+		     {
+			_delay_ms(1);
+			}
+		 
+		 count = rand1;
+		 
+		 if (c >= (4096 - 4*freq))
+			 {
+			 //x = 0;
+			 uint8_t CMSB = count >> 8;
+			 uint8_t CLSB = count & 0xFF;
+			 write4921(CMSB,CLSB);
+			 
+			 if (sh == 10) //riley reset
+			 {
+				 		   
+				 		    
+				 		    for (uint32_t del = 0; del < (20 * (rand1 + 500)); del++)
+				 		    {
+					 		 			 uint8_t CMSB = count >> 8;
+					 		 			 uint8_t CLSB = count & 0xFF;
+					 		 			 write4921(CMSB,CLSB);  
+				 		    }
+				sh = 0;			 
+			 }
+			 
+			 
+			 c = 0;
+
+			 }
+		 
+}
+		 
+		 
+ 
+		 
+
+
+	 
+ 
+ 
+  void randy2(uint16_t freq)
+   {
+	   	   speed = PIND;
+	   	   if ((speed & 0b00000001) == 0x00)
+	   	   {
+		   	   OCR0A = 0x01;
+	   	   }
+	   	   else
+	   	   {
+		   	   OCR0A = 0xFF;
+	   	   }
+	   
+	   PORTD &= ~(1 << 5);     // LED1 on
+	   PORTD |= (1 << 6);    // LED2 on
+	   PORTD |= (1 << 7);    // LED3 off
+	   
+	   uint16_t rand1 = 0;
+	   uint16_t count = 0;
+	   //uint16_t freqflip = 0;
+	   
+	   rand1= rand()  % 4096; // generate random number
+	   
+	   
+
+	   if ((c >= 0) && (c < 4096))
+	   {
+		   
+		   
+		   //next 2 lines for debug
+		   //printf("ramp rate: %d",rate);
+		   // printf("ramp ccccc: %d",c);
+		   
+		   
+		   
+		   count = rand1;
+		   
+		   if (c >= (1024 - freq))
+		   {
+			   //x = 0;
+			   uint8_t CMSB = count >> 8;
+			   uint8_t CLSB = count & 0xFF;
+			   write4921(CMSB,CLSB);
+			   
+			   //freqflip = 1126 - freq;
+			   
+			   for (uint32_t waste = 0; waste < (4000/freq * (rand1*5)); waste++)
+			   	{
+			    //DO SQUAT
+			 
+				}
+				
+				
+			    c = 0;
+		   }
+	   }
+
+   }
+	   
+	   
+	   
+
+
+	   
+
+   
+   void shold(uint16_t freq)
+   {
+
+	  
+	  //SH
+	  	 PORTD |= (1 << 5);     // BOTTOM LED1 on
+	  	 PORTD |= (1 << 6);    // MIDDLE LED2 on
+	  	 PORTD |= (1 << 7);    //  TOP LED3 on
+	  
+	  if (sh == 10)
+	   {
+	   
+	   freq = freq*4;
+	   uint8_t CMSB = freq >> 8;
+	   uint8_t CLSB = freq & 0xFF;
+	   write4921(CMSB,CLSB);
+	   
+	   sh = 0;
+	   }
+	   
+   }
